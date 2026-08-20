@@ -35,7 +35,13 @@ Substitua os valores abaixo antes da execução.
 | `<SCHEMA_APP>` | `app` | Schema que será replicado |
 | `<OWNER_APP>` | `app_owner` | Dono das tabelas do schema |
 | `<CIDR_GOLDENGATE>` | `10.210.50.0/24` | CIDR/IPs do endpoint GoldenGate |
-| `<SENHA_FORTE>` | `***` | Senha armazenada no OCI Vault |
+| `<SENHA_FORTE>` | `***` | Senha do usuário GoldenGate — não versionar no GitHub |
+
+## Usuário GoldenGate
+
+Este procedimento usa o mesmo nome de usuário, `ggadmin`, na origem e no destino. Como são bancos PostgreSQL independentes, não há conflito entre as roles. As permissões, porém, são diferentes: na origem o usuário captura alterações; no destino ele aplica as alterações.
+
+Você pode usar senhas diferentes na origem e no destino, mesmo que o nome do usuário seja igual. Evite reutilizar a senha da aplicação ou usar o usuário dono das tabelas. Nunca grave a senha real neste README, em scripts versionados ou em arquivos `.env` enviados ao GitHub.
 
 ## Pré-requisitos
 
@@ -82,7 +88,7 @@ track_commit_timestamp = on
 No `pg_hba.conf`, permita somente a rede do GoldenGate:
 
 ```conf
-host    <DB_ORIGEM>    gg_src    <CIDR_GOLDENGATE>    scram-sha-256
+host    <DB_ORIGEM>    ggadmin    <CIDR_GOLDENGATE>    scram-sha-256
 ```
 
 Reinicie o serviço após a alteração:
@@ -98,7 +104,7 @@ Para **OCI Database with PostgreSQL**, altere os parâmetros pela configuração
 Execute no banco `<DB_ORIGEM>` como administrador:
 
 ```sql
-CREATE ROLE gg_src
+CREATE ROLE ggadmin
   LOGIN
   PASSWORD '<SENHA_FORTE>'
   NOSUPERUSER
@@ -106,17 +112,17 @@ CREATE ROLE gg_src
   NOCREATEROLE
   NOINHERIT;
 
-GRANT CONNECT ON DATABASE <DB_ORIGEM> TO gg_src;
-ALTER ROLE gg_src WITH REPLICATION;
+GRANT CONNECT ON DATABASE <DB_ORIGEM> TO ggadmin;
+ALTER ROLE ggadmin WITH REPLICATION;
 
-GRANT USAGE ON SCHEMA <SCHEMA_APP> TO gg_src;
-GRANT SELECT ON ALL TABLES IN SCHEMA <SCHEMA_APP> TO gg_src;
+GRANT USAGE ON SCHEMA <SCHEMA_APP> TO ggadmin;
+GRANT SELECT ON ALL TABLES IN SCHEMA <SCHEMA_APP> TO ggadmin;
 
 ALTER DEFAULT PRIVILEGES FOR ROLE <OWNER_APP>
   IN SCHEMA <SCHEMA_APP>
-  GRANT SELECT ON TABLES TO gg_src;
+  GRANT SELECT ON TABLES TO ggadmin;
 
-CREATE SCHEMA IF NOT EXISTS ogg AUTHORIZATION gg_src;
+CREATE SCHEMA IF NOT EXISTS ogg AUTHORIZATION ggadmin;
 ```
 
 Valide o usuário:
@@ -124,7 +130,7 @@ Valide o usuário:
 ```sql
 SELECT rolname, rolreplication, rolsuper
 FROM pg_roles
-WHERE rolname = 'gg_src';
+WHERE rolname = 'ggadmin';
 ```
 
 ### 1.3 Adicionar TRANDATA
@@ -139,16 +145,16 @@ No **GoldenGate Deployment Console**:
 Em alguns ambientes, o usuário que executa a ação precisa de `SUPERUSER` temporariamente:
 
 ```sql
-ALTER ROLE gg_src WITH SUPERUSER;
+ALTER ROLE ggadmin WITH SUPERUSER;
 ```
 
 Após adicionar TRANDATA, remova o privilégio:
 
 ```sql
-ALTER ROLE gg_src WITH NOSUPERUSER;
+ALTER ROLE ggadmin WITH NOSUPERUSER;
 ```
 
-Em OCI Database with PostgreSQL, quando `SUPERUSER` não estiver disponível, use o administrador do DB System somente para habilitar TRANDATA e mantenha `gg_src` com o menor privilégio possível.
+Em OCI Database with PostgreSQL, quando `SUPERUSER` não estiver disponível, use o administrador do DB System somente para habilitar TRANDATA e mantenha `ggadmin` com o menor privilégio possível.
 
 ## 2. Preparar PostgreSQL de destino
 
@@ -185,7 +191,7 @@ psql \
 Execute no banco `<DB_DESTINO>` como administrador:
 
 ```sql
-CREATE ROLE gg_tgt
+CREATE ROLE ggadmin
   LOGIN
   PASSWORD '<SENHA_FORTE>'
   NOSUPERUSER
@@ -193,28 +199,28 @@ CREATE ROLE gg_tgt
   NOCREATEROLE
   NOINHERIT;
 
-GRANT CONNECT ON DATABASE <DB_DESTINO> TO gg_tgt;
-GRANT USAGE ON SCHEMA <SCHEMA_APP> TO gg_tgt;
+GRANT CONNECT ON DATABASE <DB_DESTINO> TO ggadmin;
+GRANT USAGE ON SCHEMA <SCHEMA_APP> TO ggadmin;
 
 GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE
 ON ALL TABLES IN SCHEMA <SCHEMA_APP>
-TO gg_tgt;
+TO ggadmin;
 
 GRANT USAGE, SELECT, UPDATE
 ON ALL SEQUENCES IN SCHEMA <SCHEMA_APP>
-TO gg_tgt;
+TO ggadmin;
 
 ALTER DEFAULT PRIVILEGES FOR ROLE <OWNER_APP>
   IN SCHEMA <SCHEMA_APP>
   GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE
-  ON TABLES TO gg_tgt;
+  ON TABLES TO ggadmin;
 
 ALTER DEFAULT PRIVILEGES FOR ROLE <OWNER_APP>
   IN SCHEMA <SCHEMA_APP>
   GRANT USAGE, SELECT, UPDATE
-  ON SEQUENCES TO gg_tgt;
+  ON SEQUENCES TO ggadmin;
 
-CREATE SCHEMA IF NOT EXISTS ogg AUTHORIZATION gg_tgt;
+CREATE SCHEMA IF NOT EXISTS ogg AUTHORIZATION ggadmin;
 ```
 
 No Deployment Console, conecte em `PG_TARGET` e crie a checkpoint table:
@@ -231,10 +237,10 @@ ogg.checkpoint
 4. Crie o deployment e aguarde o status **Active**.
 5. Crie a Connection `PG_SOURCE`:
    - tipo PostgreSQL/OCI Database with PostgreSQL;
-   - host, porta `5432`, database e usuário `gg_src`;
+   - host, porta `5432`, database e usuário `ggadmin`;
    - TLS com `SSL mode = Require` para OCI Database with PostgreSQL;
-   - senha por OCI Vault Secret, preferencialmente.
-6. Crie a Connection `PG_TARGET` com `gg_tgt`.
+   - em **Advanced options > Security**, desmarque **Use vault secrets** e informe a senha de `ggadmin` diretamente.
+6. Crie a Connection `PG_TARGET` com `ggadmin`; em **Advanced options > Security**, também desmarque **Use vault secrets** e informe a senha diretamente.
 7. No deployment, use **Assign connections** para associar `PG_SOURCE` e `PG_TARGET`.
 8. Em **DB Connections**, teste ambas as conexões.
 
