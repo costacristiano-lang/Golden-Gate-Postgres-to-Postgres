@@ -6,19 +6,25 @@ Guia genérico para configurar replicação PostgreSQL-to-PostgreSQL com OCI Gol
 
 ## Arquitetura
 
-```text
-PostgreSQL origem
-        |
-        | Extract / logical replication
-        v
-OCI GoldenGate Deployment (PostgreSQL)
-        |
-        | Distribution Path
-        v
-PostgreSQL destino
-        |
-        v
-Replicat
+```mermaid
+flowchart LR
+    SRC[("PostgreSQL origem")]
+    TGT[("PostgreSQL destino")]
+    subgraph INITIAL["Carga inicial"]
+        COPY["Cópia consistente<br/>pg_dump / pg_restore, ferramenta externa<br/>ou Extract de carga inicial"]
+    end
+    subgraph CDC["Sincronização contínua"]
+        EX["Extract PostgreSQL<br/>captura lógica"]
+        TL["Trail local"]
+        DP["Distribution Path"]
+        TR["Trail recebido"]
+        REP["Replicat"]
+        EX --> TL --> DP --> TR --> REP
+    end
+    SRC --> COPY --> TGT
+    SRC --> EX
+    REP --> TGT
+    COPY -. "Coordenar ponto de captura e aplicação" .-> EX
 ```
 
 Um único Deployment pode hospedar Extract e Replicat em ambientes simples. Para produção, avalie Deployments separados conforme volume, isolamento, disponibilidade e operação.
